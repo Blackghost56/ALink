@@ -102,9 +102,10 @@ class ALinkTCPClient(
                             Log.d(TAG, "The size of the file being read is not equal to the available size")
                         }
                     }
+                    callback.onSocketClosed()
                 } catch (e: Exception) {
                     e.printStackTrace()
-                    isRunning = false
+                    stop()
                 }
             }.start()
         }
@@ -114,7 +115,7 @@ class ALinkTCPClient(
     fun send(data: ByteArray) {
         socket?.let {
             txHandler?.post {
-                if (isRunning && it.isConnected) {
+                if (isRunning && !it.isClosed) {
                     try {
                         it.getOutputStream().write(data)
                     } catch (e: Exception) {

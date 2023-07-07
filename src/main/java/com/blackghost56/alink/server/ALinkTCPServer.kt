@@ -136,7 +136,7 @@ class ALinkTCPServer(
     fun send(address: Int, data: ByteArray) {
         addressMap[address]?.let {
             txHandler?.post {
-                if (isRunning && it.isConnected) {
+                if (isRunning && !it.isClosed) {
                     try {
                         it.getOutputStream().write(data)
                     } catch (e: Exception) {
