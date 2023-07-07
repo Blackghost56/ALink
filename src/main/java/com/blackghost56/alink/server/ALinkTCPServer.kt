@@ -8,9 +8,6 @@ import android.os.HandlerThread
 import android.util.Log
 import com.blackghost56.alink.Consts
 import com.blackghost56.alink.NsdHelper
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import java.io.BufferedInputStream
 import java.net.ServerSocket
 import java.net.Socket
@@ -132,7 +129,7 @@ class ALinkTCPServer(
             }
             addressMap.remove(thisAddress)
             Log.d(TAG, "Disconnect: $thisAddress, ip: $ip")
-        }
+        }.start()
     }
 
 
