@@ -23,8 +23,6 @@ class ALinkTCPServer(
 ) {
     private val TAG = ALinkTCPServer::class.java.simpleName
 
-//    private val coroutineScope = CoroutineScope(Job() + Dispatchers.IO)
-
     private var nsdHelper = NsdHelper(context, Consts.SERVICE_TYPE_TCP)
     private var serverSocket: ServerSocket? = null
     @Volatile private var isRunning = false
@@ -120,14 +118,17 @@ class ALinkTCPServer(
             val inputStream = BufferedInputStream(socket.getInputStream())
             while (!socket.isClosed && isRunning) {
                 val inSize = inputStream.available()
+                if (inSize <= 0) {
+                    Thread.sleep(1)
+                    continue
+                }
+
                 val rxData = ByteArray(inSize)
                 if (inputStream.read(rxData, 0, inSize) == inSize) {
                     rxHandler?.post { callback.onDataRx(thisAddress, rxData) }
                 } else {
                     Log.d(TAG, "The size of the file being read is not equal to the available size")
                 }
-                // Todo
-                Thread.sleep(1)
             }
             addressMap.remove(thisAddress)
             Log.d(TAG, "Disconnect: $thisAddress, ip: $ip")

@@ -90,14 +90,17 @@ class ALinkTCPClient(
                     callback.onSocketOpened()
                     while (isRunning && !socket.isClosed){
                         val inSize = inputStream.available()
+                        if (inSize <= 0) {
+                            Thread.sleep(1)
+                            continue
+                        }
+
                         val rxData = ByteArray(inSize)
                         if (inputStream.read(rxData, 0, inSize) == inSize) {
                             rxHandler?.post { callback.onDataRx(rxData) }
                         } else {
                             Log.d(TAG, "The size of the file being read is not equal to the available size")
                         }
-                        // Todo
-                        Thread.sleep(1)
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()
