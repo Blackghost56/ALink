@@ -141,6 +141,7 @@ class ALinkTCPServer(
                         it.getOutputStream().write(data)
                     } catch (e: Exception) {
                         e.printStackTrace()
+                        addressMap.remove(address)
                     }
                 } else {
                     Log.d(TAG, "The socket is not connected")

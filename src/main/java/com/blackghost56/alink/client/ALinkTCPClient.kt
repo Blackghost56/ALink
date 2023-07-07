@@ -120,6 +120,7 @@ class ALinkTCPClient(
                         it.getOutputStream().write(data)
                     } catch (e: Exception) {
                         e.printStackTrace()
+                        stop()
                     }
                 } else {
                     Log.d(TAG, "The socket is not connected")
