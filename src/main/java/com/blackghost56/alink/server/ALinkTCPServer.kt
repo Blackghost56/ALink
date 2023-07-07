@@ -23,7 +23,7 @@ class ALinkTCPServer(
 ) {
     private val TAG = ALinkTCPServer::class.java.simpleName
 
-    private val coroutineScope = CoroutineScope(Job() + Dispatchers.IO)
+//    private val coroutineScope = CoroutineScope(Job() + Dispatchers.IO)
 
     private var nsdHelper = NsdHelper(context, Consts.SERVICE_TYPE_TCP)
     private var serverSocket: ServerSocket? = null
@@ -43,7 +43,7 @@ class ALinkTCPServer(
 
     fun start(){
         // Try to register NSD service
-        nsdHelper.registerService(name = name, callback = object : NsdManager.RegistrationListener {
+        nsdHelper.registerService(name = name, port = port, callback = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(p0: NsdServiceInfo?) {
                 Log.i(TAG, "onServiceRegistered: $p0")
                 openServerSocket()
