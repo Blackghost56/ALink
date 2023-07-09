@@ -35,6 +35,7 @@ class COBS {
                     counter++
                 }
             }
+            result.add(EOP)
 
             return result
         }
