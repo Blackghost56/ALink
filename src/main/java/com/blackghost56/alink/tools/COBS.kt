@@ -8,7 +8,7 @@ class COBS {
     companion object {
         const val EOP: Byte = 0
 
-        fun encode(data: List<Byte>): List<Byte> {
+        fun encode(data: List<Byte>, addEOP: Boolean = true): List<Byte> {
             val result: MutableList<Byte> = LinkedList()
 
             val dataCopy = LinkedList(data)
@@ -35,7 +35,9 @@ class COBS {
                     counter++
                 }
             }
-            result.add(EOP)
+
+            if (addEOP)
+                result.add(EOP)
 
             return result
         }

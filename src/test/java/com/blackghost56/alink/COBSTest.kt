@@ -21,7 +21,7 @@ class COBSTest {
     private fun test1(data: List<Byte>): Boolean {
         println("\nTest1")
 
-        val encodedData = COBS.encode(data)
+        val encodedData = COBS.encode(data, false)
         println("encodedData")
         encodedData.forEach { print("$it ") }
         println()
