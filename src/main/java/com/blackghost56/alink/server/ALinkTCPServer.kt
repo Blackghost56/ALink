@@ -151,4 +151,8 @@ class ALinkTCPServer(
     }
 
 
+    fun getClientList(): List<Int> {
+        return addressMap.keys.toList()
+    }
+
 }
