@@ -7,7 +7,8 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import com.blackghost56.alink.Consts
-import com.blackghost56.alink.NsdHelper
+import com.blackghost56.alink.tools.COBS
+import com.blackghost56.alink.tools.NsdHelper
 import java.io.BufferedInputStream
 import java.net.ServerSocket
 import java.net.Socket
@@ -16,7 +17,8 @@ class ALinkTCPServer(
     private val context: Context,
     val name: String,
     val port: Int,
-    private val callback: Callback
+    private val callback: Callback,
+    val cobsEnable: Boolean = true
 ) {
     private val TAG = ALinkTCPServer::class.java.simpleName
 
@@ -24,7 +26,8 @@ class ALinkTCPServer(
     private var serverSocket: ServerSocket? = null
     @Volatile private var isRunning = false
     private var internalIncrementAddress = 0;
-    private val addressMap = mutableMapOf<Int, Socket>()
+    private val socketMap = mutableMapOf<Int, Socket>()
+    private val rxBufMap = mutableMapOf<Int, MutableList<Byte>>()
     private var txHandler: Handler? = null
     private var rxHandler: Handler? = null
 
@@ -73,7 +76,8 @@ class ALinkTCPServer(
             it.looper.quit()
         }
 
-        addressMap.clear()
+        socketMap.clear()
+        rxBufMap.clear()
         internalIncrementAddress = 0
 
         callback.onStop()
@@ -107,7 +111,7 @@ class ALinkTCPServer(
 
     private fun clientHandler(socket: Socket) {
         val thisAddress = internalIncrementAddress++
-        addressMap[thisAddress] = socket
+        socketMap[thisAddress] = socket
         callback.onNewConnection(thisAddress)
         val ip = socket.inetAddress.hostAddress ?: "Unknown"
         Log.d(TAG, "New connection: $thisAddress, ip: $ip")
@@ -122,26 +126,54 @@ class ALinkTCPServer(
 
                 val rxData = ByteArray(inSize)
                 if (inputStream.read(rxData, 0, inSize) == inSize) {
-                    rxHandler?.post { callback.onDataRx(thisAddress, rxData) }
+                    rxHandler?.post { processRxData(thisAddress, rxData) }
                 } else {
                     Log.d(TAG, "The size of the file being read is not equal to the available size")
                 }
             }
-            addressMap.remove(thisAddress)
+            socketMap.remove(thisAddress)
+            rxBufMap.remove(thisAddress)
             Log.d(TAG, "Disconnect: $thisAddress, ip: $ip")
         }.start()
     }
 
+    private fun processRxData(address: Int, data: ByteArray) {
+        if (cobsEnable){
+            val list: MutableList<Byte>
+            if (!rxBufMap.contains(address)){
+                list = mutableListOf()
+                rxBufMap[address] = list
+            } else {
+                list = rxBufMap[address]!!
+            }
+
+            for (value in data) {
+                if (value == COBS.EOP) {
+                    callback.onDataRx(address, COBS.decode(list).toByteArray())
+                    list.clear()
+                } else {
+                    list.add(value)
+                }
+            }
+        } else {
+            callback.onDataRx(address, data)
+        }
+    }
 
     fun send(address: Int, data: ByteArray) {
-        addressMap[address]?.let {
+        socketMap[address]?.let {
             txHandler?.post {
                 if (isRunning && !it.isClosed) {
                     try {
-                        it.getOutputStream().write(data)
+                        if (cobsEnable){
+                            it.getOutputStream().write(COBS.encode(data.toList()).toByteArray())
+                        } else {
+                            it.getOutputStream().write(data)
+                        }
                     } catch (e: Exception) {
                         e.printStackTrace()
-                        addressMap.remove(address)
+                        socketMap.remove(address)
+                        rxBufMap.remove(address)
                     }
                 } else {
                     Log.d(TAG, "The socket is not connected")
@@ -150,9 +182,8 @@ class ALinkTCPServer(
         }
     }
 
-
     fun getClientList(): List<Int> {
-        return addressMap.keys.toList()
+        return socketMap.keys.toList()
     }
 
 }

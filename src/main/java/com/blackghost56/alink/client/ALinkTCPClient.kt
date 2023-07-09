@@ -6,7 +6,8 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import com.blackghost56.alink.Consts
-import com.blackghost56.alink.NsdHelper
+import com.blackghost56.alink.tools.COBS
+import com.blackghost56.alink.tools.NsdHelper
 import java.io.BufferedInputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -16,7 +17,8 @@ import java.net.Socket
 class ALinkTCPClient(
     private val context: Context,
     val serverName: String,
-    private val callback: Callback
+    private val callback: Callback,
+    val cobsEnable: Boolean = true
 ) {
     private val TAG = ALinkTCPClient::class.java.simpleName
 
@@ -25,6 +27,7 @@ class ALinkTCPClient(
     @Volatile private var isRunning = false
     private var txHandler: Handler? = null
     private var rxHandler: Handler? = null
+    private var rxBuf = mutableListOf<Byte>()
 
     interface Callback {
         fun onSocketOpened()
@@ -63,6 +66,7 @@ class ALinkTCPClient(
 
     fun stop(){
         socket?.close()
+        rxBuf.clear()
 
         txHandler?.let {
             it.removeCallbacksAndMessages(null)
@@ -97,12 +101,13 @@ class ALinkTCPClient(
 
                         val rxData = ByteArray(inSize)
                         if (inputStream.read(rxData, 0, inSize) == inSize) {
-                            rxHandler?.post { callback.onDataRx(rxData) }
+                            rxHandler?.post { processRxData(rxData) }
                         } else {
                             Log.d(TAG, "The size of the file being read is not equal to the available size")
                         }
                     }
                     callback.onSocketClosed()
+                    stop()
                 } catch (e: Exception) {
                     e.printStackTrace()
                     stop()
@@ -111,13 +116,31 @@ class ALinkTCPClient(
         }
     }
 
+    private fun processRxData(data: ByteArray) {
+        if (cobsEnable){
+            for (value in data) {
+                if (value == COBS.EOP) {
+                    callback.onDataRx(COBS.decode(rxBuf).toByteArray())
+                    rxBuf.clear()
+                } else {
+                    rxBuf.add(value)
+                }
+            }
+        } else {
+            callback.onDataRx(data)
+        }
+    }
 
     fun send(data: ByteArray) {
         socket?.let {
             txHandler?.post {
                 if (isRunning && !it.isClosed) {
                     try {
-                        it.getOutputStream().write(data)
+                        if (cobsEnable){
+                            it.getOutputStream().write(COBS.encode(data.toList()).toByteArray())
+                        } else {
+                            it.getOutputStream().write(data)
+                        }
                     } catch (e: Exception) {
                         e.printStackTrace()
                         stop()

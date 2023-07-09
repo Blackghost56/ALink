@@ -1,4 +1,4 @@
-package com.blackghost56.alink
+package com.blackghost56.alink.tools
 
 import android.content.Context
 import android.net.nsd.NsdManager
