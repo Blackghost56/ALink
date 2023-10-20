@@ -16,7 +16,7 @@ import java.net.Socket
 
 class ALinkTCPClient(
     private val context: Context,
-    val serverName: String,
+    var serverName: String,
     private val callback: Callback,
     val cobsEnable: Boolean = true
 ) {
@@ -79,6 +79,11 @@ class ALinkTCPClient(
         }
 
         isRunning = false
+    }
+
+    fun restart(){
+        stop()
+        startDiscovery()
     }
 
     private fun openSocket(address: InetAddress, port: Int) {
