@@ -40,6 +40,9 @@ class ALinkTCPServer(
     }
 
     fun start(){
+        if (isRunning)
+            return
+
         // Try to register NSD service
         nsdHelper.registerService(name = name, port = port, callback = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(p0: NsdServiceInfo?) {
