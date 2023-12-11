@@ -15,7 +15,7 @@ import java.net.Socket
 
 class ALinkTCPServer(
     private val context: Context,
-    val name: String,
+    var name: String,
     val port: Int,
     private val callback: Callback,
     val cobsEnable: Boolean = true
@@ -36,6 +36,7 @@ class ALinkTCPServer(
         fun onErrorStart(msg: String)
         fun onStop()
         fun onNewConnection(address: Int)
+        fun onDisconnect(address: Int)
         fun onDataRx(address: Int, data: ByteArray)
     }
 
@@ -84,6 +85,11 @@ class ALinkTCPServer(
         internalIncrementAddress = 0
 
         callback.onStop()
+    }
+
+    fun restart(){
+        stop()
+        start()
     }
 
     private fun openServerSocket(){
@@ -136,6 +142,7 @@ class ALinkTCPServer(
             }
             socketMap.remove(thisAddress)
             rxBufMap.remove(thisAddress)
+            callback.onDisconnect(thisAddress)
             Log.d(TAG, "Disconnect: $thisAddress, ip: $ip")
         }.start()
     }
@@ -187,6 +194,13 @@ class ALinkTCPServer(
 
     fun getClientList(): List<Int> {
         return socketMap.keys.toList()
+    }
+
+    fun getClientAddressList(): List<String> {
+        val socketList = mutableListOf<Socket>()
+        socketList.addAll(socketMap.values)
+
+        return socketList.map { it.inetAddress.hostAddress ?: "Unknown" }.toList()
     }
 
 }

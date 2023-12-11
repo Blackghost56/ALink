@@ -45,7 +45,11 @@ class NsdHelper(
     }
 
     fun unregisterService() {
-        nsdManager.unregisterService(registrationListener)
+        if (registrationListener == null) {
+            nsdManager.unregisterService(registrationListener)
+        } else {
+            Log.w(TAG, "Service has already been unregistered")
+        }
     }
 
     fun discoverServices() {
