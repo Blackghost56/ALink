@@ -65,7 +65,6 @@ class ALinkTCPClient(
     }
 
     fun stop(){
-        socket?.close()
         rxBuf.clear()
 
         txHandler?.let {
@@ -116,6 +115,8 @@ class ALinkTCPClient(
                 } catch (e: Exception) {
                     e.printStackTrace()
                     stop()
+                } finally {
+                    socket?.close()
                 }
             }.start()
         }

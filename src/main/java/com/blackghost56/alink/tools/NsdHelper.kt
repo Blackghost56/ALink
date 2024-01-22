@@ -17,7 +17,7 @@ class NsdHelper(
     private val serviceList: MutableList<NsdServiceInfo> = ArrayList()
     private val serviceResolveSemaphore = Semaphore(1)
     private var discoveryCallback: DiscoveryCallback? = null
-    private var registrationListener: NsdManager.RegistrationListener? = null
+    var registrationListener: NsdManager.RegistrationListener? = null
     var serviceInfo: NsdServiceInfo? = null
 
     fun getServiceList(): List<NsdServiceInfo> {
@@ -34,6 +34,7 @@ class NsdHelper(
     }
 
     fun registerService(name: String, port: Int = 80, callback: NsdManager.RegistrationListener) {
+        Log.d(TAG, "registerService: $name")
         registrationListener = callback
         val serviceInfo = NsdServiceInfo()
         serviceInfo.serviceName = name
@@ -45,7 +46,7 @@ class NsdHelper(
     }
 
     fun unregisterService() {
-        if (registrationListener == null) {
+        if (registrationListener != null) {
             nsdManager.unregisterService(registrationListener)
         } else {
             Log.w(TAG, "Service has already been unregistered")

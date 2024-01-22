@@ -12,6 +12,7 @@ import com.blackghost56.alink.tools.NsdHelper
 import java.io.BufferedInputStream
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketException
 
 class ALinkTCPServer(
     private val context: Context,
@@ -34,18 +35,20 @@ class ALinkTCPServer(
     interface Callback {
         fun onSuccessStart()
         fun onErrorStart(msg: String)
+        fun onError(msg: String)
         fun onStop()
         fun onNewConnection(address: Int)
         fun onDisconnect(address: Int)
         fun onDataRx(address: Int, data: ByteArray)
     }
 
+
     fun start(){
-        if (isRunning)
+        if (isRunning || nsdHelper.registrationListener != null)
             return
 
         // Try to register NSD service
-        nsdHelper.registerService(name = name, port = port, callback = object : NsdManager.RegistrationListener {
+        nsdHelper.registrationListener = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(p0: NsdServiceInfo?) {
                 Log.i(TAG, "onServiceRegistered: $p0")
                 openServerSocket()
@@ -54,20 +57,28 @@ class ALinkTCPServer(
             override fun onRegistrationFailed(p0: NsdServiceInfo?, p1: Int) {
                 Log.e(TAG, "onRegistrationFailed: $p0")
                 callback.onErrorStart("Filed registration NSD service")
+                isRunning = false
+                nsdHelper.registrationListener = null
             }
 
             override fun onServiceUnregistered(p0: NsdServiceInfo?) {
                 Log.i(TAG, "onServiceUnregistered: $p0")
+                isRunning = false
+                nsdHelper.registrationListener = null
             }
 
             override fun onUnregistrationFailed(p0: NsdServiceInfo?, p1: Int) {
                 Log.e(TAG, "onUnregistrationFailed: $p0")
             }
-        })
+        }
+        nsdHelper.registrationListener?.let {
+            nsdHelper.registerService(name = name, port = port, callback = it)
+        }
     }
 
     fun stop(){
         isRunning = false
+        serverSocket?.close()
         nsdHelper.unregisterService()
 
         txHandler?.let {
@@ -101,19 +112,24 @@ class ALinkTCPServer(
         rxThread.start()
         rxHandler = Handler(rxThread.looper)
 
-        isRunning = true
         Thread {
             try {
                 serverSocket = ServerSocket(port)
                 callback.onSuccessStart()
+                isRunning = true
                 while (isRunning) {
                     serverSocket?.accept()?.let { socket ->
                         clientHandler(socket)
                     }
                 }
+            } catch (_: SocketException){
+
             } catch (e: Exception) {
                 e.printStackTrace()
-                stop()
+                callback.onError(e.message.toString())
+            } finally {
+                //serverSocket?.close()
+                isRunning = false
             }
         }.start()
     }
