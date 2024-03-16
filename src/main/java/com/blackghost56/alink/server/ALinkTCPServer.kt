@@ -104,15 +104,15 @@ class ALinkTCPServer(
     }
 
     private fun openServerSocket(){
-        val txThread = HandlerThread("ALinkServerTxThread")
+        val txThread = HandlerThread("ALinkSTxHandler")
         txThread.start()
         txHandler = Handler(txThread.looper)
 
-        val rxThread = HandlerThread("ALinkServerRxThread")
+        val rxThread = HandlerThread("ALinkSRxHandler")
         rxThread.start()
         rxHandler = Handler(rxThread.looper)
 
-        Thread {
+        Thread ({
             try {
                 serverSocket = ServerSocket(port)
                 callback.onSuccessStart()
@@ -131,7 +131,7 @@ class ALinkTCPServer(
                 //serverSocket?.close()
                 isRunning = false
             }
-        }.start()
+        }, "ALinkSThread").start()
     }
 
     private fun clientHandler(socket: Socket) {
@@ -140,7 +140,7 @@ class ALinkTCPServer(
         callback.onNewConnection(thisAddress)
         val ip = socket.inetAddress.hostAddress ?: "Unknown"
         Log.d(TAG, "New connection: $thisAddress, ip: $ip")
-        Thread {
+        Thread ({
             val inputStream = BufferedInputStream(socket.getInputStream())
             while (!socket.isClosed && isRunning) {
                 val inSize = inputStream.available()
@@ -160,7 +160,7 @@ class ALinkTCPServer(
             rxBufMap.remove(thisAddress)
             callback.onDisconnect(thisAddress)
             Log.d(TAG, "Disconnect: $thisAddress, ip: $ip")
-        }.start()
+        }, "ALinkSThread_$thisAddress").start()
     }
 
     private fun processRxData(address: Int, data: ByteArray) {
