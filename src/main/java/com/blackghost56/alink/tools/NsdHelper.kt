@@ -18,7 +18,7 @@ class NsdHelper(
     private val serviceResolveSemaphore = Semaphore(1)
     private var discoveryCallback: DiscoveryCallback? = null
     var registrationListener: NsdManager.RegistrationListener? = null
-    var serviceInfo: NsdServiceInfo? = null
+    private var serviceInfo: NsdServiceInfo? = null
 
     fun getServiceList(): List<NsdServiceInfo> {
         return serviceList

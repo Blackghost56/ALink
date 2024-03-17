@@ -9,34 +9,45 @@ import android.util.Log
 import com.blackghost56.alink.Consts
 import com.blackghost56.alink.tools.COBS
 import com.blackghost56.alink.tools.NsdHelper
+import com.blackghost56.alink.tools.TCPHeader
+import com.blackghost56.alink.tools.TCPHeader.TCPMessageType.PING
+import com.blackghost56.alink.tools.TCPHeader.TCPMessageType.USER_DATA
 import java.io.BufferedInputStream
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
 
-class ALinkTCPServer(
-    private val context: Context,
+open class ALinkTCPServer(
+    context: Context,
     var name: String,
-    val port: Int,
+    private val port: Int,
     private val callback: Callback,
-    val cobsEnable: Boolean = true
+    private val cobsEnable: Boolean = true
 ) {
     private val TAG = ALinkTCPServer::class.java.simpleName
 
     private var nsdHelper = NsdHelper(context, Consts.SERVICE_TYPE_TCP)
     private var serverSocket: ServerSocket? = null
     @Volatile private var isRunning = false
-    private var internalIncrementAddress = 0;
-    private val socketMap = mutableMapOf<Int, Socket>()
-    private val rxBufMap = mutableMapOf<Int, MutableList<Byte>>()
+    private var internalIncrementAddress = 0
+//    private val socketMap = mutableMapOf<Int, Socket>()
+//    private val rxBufMap = mutableMapOf<Int, MutableList<Byte>>()
+    private val clientMap = mutableMapOf<Int, Client>()
     private var txHandler: Handler? = null
     private var rxHandler: Handler? = null
 
+
+    private data class Client(
+        val socket: Socket,
+        var rxBuffer: MutableList<Byte> = mutableListOf(),
+        var lastTxTime: Long = 0,
+        var lastRxTime: Long = 0
+    )
+
     interface Callback {
         fun onSuccessStart()
-        fun onErrorStart(msg: String)
         fun onError(msg: String)
-        fun onStop()
+//        fun onStop()
         fun onNewConnection(address: Int)
         fun onDisconnect(address: Int)
         fun onDataRx(address: Int, data: ByteArray)
@@ -56,7 +67,7 @@ class ALinkTCPServer(
 
             override fun onRegistrationFailed(p0: NsdServiceInfo?, p1: Int) {
                 Log.e(TAG, "onRegistrationFailed: $p0")
-                callback.onErrorStart("Filed registration NSD service")
+                callback.onError("Filed registration NSD service")
                 isRunning = false
                 nsdHelper.registrationListener = null
             }
@@ -91,11 +102,10 @@ class ALinkTCPServer(
             it.looper.quit()
         }
 
-        socketMap.clear()
-        rxBufMap.clear()
+        clientMap.clear()
         internalIncrementAddress = 0
 
-        callback.onStop()
+//        callback.onStop()
     }
 
     fun restart(){
@@ -136,70 +146,106 @@ class ALinkTCPServer(
 
     private fun clientHandler(socket: Socket) {
         val thisAddress = internalIncrementAddress++
-        socketMap[thisAddress] = socket
+        val client = Client(socket)
+        clientMap[thisAddress] = client
         callback.onNewConnection(thisAddress)
         val ip = socket.inetAddress.hostAddress ?: "Unknown"
         Log.d(TAG, "New connection: $thisAddress, ip: $ip")
+        val rxTimeout = 3000
+        val txTimeout = 1000
         Thread ({
-            val inputStream = BufferedInputStream(socket.getInputStream())
-            while (!socket.isClosed && isRunning) {
-                val inSize = inputStream.available()
-                if (inSize <= 0) {
-                    Thread.sleep(1)
-                    continue
-                }
+            try {
+                val inputStream = BufferedInputStream(socket.getInputStream())
+                while (!socket.isClosed && isRunning) {
+                    // Updating the channel status
+                    val currentTime = System.currentTimeMillis()
+                    if (currentTime > client.lastTxTime + txTimeout) {
+                        sendLL(thisAddress, PING, byteArrayOf())
+                        Log.d(TAG, "Tx ping: $thisAddress, ip: $ip")
+                    }
+                    if (currentTime > client.lastRxTime + rxTimeout) {
+                        Log.d(TAG, "Rx timeout: $thisAddress, ip: $ip")
+                        break
+                    }
 
-                val rxData = ByteArray(inSize)
-                if (inputStream.read(rxData, 0, inSize) == inSize) {
-                    rxHandler?.post { processRxData(thisAddress, rxData) }
-                } else {
-                    Log.d(TAG, "The size of the file being read is not equal to the available size")
+                    val inSize = inputStream.available()
+                    if (inSize <= 0) {
+                        Thread.sleep(1)
+                        continue
+                    }
+
+                    client.lastRxTime = System.currentTimeMillis()
+                    val rxData = ByteArray(inSize)
+                    if (inputStream.read(rxData, 0, inSize) == inSize) {
+                        rxHandler?.post { processRxData(thisAddress, rxData) }
+                    } else {
+                        Log.d(TAG, "The size of the file being read is not equal to the available size")
+                    }
                 }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                clientMap.remove(thisAddress)
+                callback.onDisconnect(thisAddress)
+                Log.d(TAG, "Disconnect: $thisAddress, ip: $ip")
             }
-            socketMap.remove(thisAddress)
-            rxBufMap.remove(thisAddress)
-            callback.onDisconnect(thisAddress)
-            Log.d(TAG, "Disconnect: $thisAddress, ip: $ip")
         }, "ALinkSThread_$thisAddress").start()
     }
 
     private fun processRxData(address: Int, data: ByteArray) {
         if (cobsEnable){
-            val list: MutableList<Byte>
-            if (!rxBufMap.contains(address)){
-                list = mutableListOf()
-                rxBufMap[address] = list
-            } else {
-                list = rxBufMap[address]!!
-            }
-
-            for (value in data) {
-                if (value == COBS.EOP) {
-                    callback.onDataRx(address, COBS.decode(list).toByteArray())
-                    list.clear()
-                } else {
-                    list.add(value)
+            clientMap[address]?.let { client ->
+                for (value in data) {
+                    if (value == COBS.EOP) {
+                        onDataRx(address, COBS.decode(client.rxBuffer).toByteArray())
+                        client.rxBuffer.clear()
+                    } else {
+                        client.rxBuffer.add(value)
+                    }
                 }
             }
         } else {
-            callback.onDataRx(address, data)
+            onDataRx(address, data)
+        }
+    }
+
+    private fun onDataRx(address: Int, data: ByteArray) {
+        try {
+            val msg = TCPHeader.fromRaw(data)
+            when (msg.first){
+                USER_DATA -> callback.onDataRx(address, msg.second)
+                PING -> {
+                    clientMap[address]?.lastTxTime = System.currentTimeMillis()
+                    Log.d(TAG, "Rx Ping $address")
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
     fun send(address: Int, data: ByteArray) {
-        socketMap[address]?.let {
+        sendLL(address, TCPHeader.toRaw(USER_DATA, data))
+    }
+
+    private fun sendLL(address: Int, type: TCPHeader.TCPMessageType, data: ByteArray){
+        sendLL(address, TCPHeader.toRaw(type, data))
+    }
+
+    private fun sendLL(address: Int, data: ByteArray) {
+        clientMap[address]?.let { client ->
             txHandler?.post {
-                if (isRunning && !it.isClosed) {
+                if (isRunning && !client.socket.isClosed) {
                     try {
                         if (cobsEnable){
-                            it.getOutputStream().write(COBS.encode(data.toList()).toByteArray())
+                            client.socket.getOutputStream().write(COBS.encode(data.toList()).toByteArray())
                         } else {
-                            it.getOutputStream().write(data)
+                            client.socket.getOutputStream().write(data)
                         }
+                        client.lastTxTime = System.currentTimeMillis()
                     } catch (e: Exception) {
                         e.printStackTrace()
-                        socketMap.remove(address)
-                        rxBufMap.remove(address)
+                        clientMap.remove(address)
                     }
                 } else {
                     Log.d(TAG, "The socket is not connected")
@@ -209,14 +255,13 @@ class ALinkTCPServer(
     }
 
     fun getClientList(): List<Int> {
-        return socketMap.keys.toList()
+        return clientMap.keys.toList()
     }
 
     fun getClientAddressList(): List<String> {
-        val socketList = mutableListOf<Socket>()
-        socketList.addAll(socketMap.values)
-
-        return socketList.map { it.inetAddress.hostAddress ?: "Unknown" }.toList()
+        return mutableListOf<Client>().apply {
+            addAll(clientMap.values)
+        }.map { it.socket.inetAddress.hostAddress ?: "Unknown" }.toList()
     }
 
 }
