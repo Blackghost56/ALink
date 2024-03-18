@@ -73,7 +73,7 @@ class ALinkTCPClient(
         }
     }
 
-    suspend fun stop(){
+     fun stop(){
         isRunning = false
 
         txHandler?.let {
@@ -88,12 +88,12 @@ class ALinkTCPClient(
 
         stopDiscoveryResult = false
         nsdHelper.stopServiceDiscovery()
-        while (nsdHelper.discoveryListener != null || !stopDiscoveryResult) {
+        while (nsdHelper.discoveryListener != null && !stopDiscoveryResult) {
             Thread.sleep(1)
         }
     }
 
-    suspend fun restart(){
+    fun restart(){
         stop()
         startDiscovery()
     }
@@ -103,13 +103,14 @@ class ALinkTCPClient(
             Thread({
                 try {
                     val socket = Socket()
+                    Log.d(TAG, "New socket")
                     this.socket = socket
                     socket.connect(InetSocketAddress(address, port), 1000)
                     val inputStream = BufferedInputStream(socket.getInputStream())
                     isRunning = true
                     callback.onSocketOpened()
                     val rxTimeout = 3000
-                    var lastRxTime: Long = 0
+                    var lastRxTime: Long = System.currentTimeMillis()
                     while (isRunning && !socket.isClosed){
                         if (System.currentTimeMillis() - lastRxTime > rxTimeout) {
                             Log.e(TAG, "The connection has timed out")
@@ -136,6 +137,7 @@ class ALinkTCPClient(
                     socket?.close()
                     rxBuf.clear()
                     callback.onSocketClosed()
+                    Log.d(TAG, "Socket closed")
                 }
             }, "ALinkCThread").start()
         }
@@ -163,7 +165,7 @@ class ALinkTCPClient(
                 USER_DATA -> callback.onDataRx(msg.second)
                 PING -> {
                     sendLL(TCPHeader.toRaw(PING, ByteArray(0)))
-                    Log.d(TAG, "Rx Ping")
+//                    Log.d(TAG, "Rx Ping")
                 }
             }
         } catch (e: Exception) {
@@ -177,6 +179,7 @@ class ALinkTCPClient(
 
     private fun sendLL(type: TCPHeader.TCPMessageType, data: ByteArray){
         sendLL(TCPHeader.toRaw(type, data))
+        Log.d(TAG, "Tx: $type")
     }
 
     private fun sendLL(data: ByteArray) {
