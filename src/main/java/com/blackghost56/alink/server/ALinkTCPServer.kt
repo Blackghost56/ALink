@@ -151,10 +151,10 @@ open class ALinkTCPServer(
         callback.onNewConnection(thisAddress)
         val ip = socket.inetAddress.hostAddress ?: "Unknown"
         Log.d(TAG, "New connection: $thisAddress, ip: $ip")
-        val rxTimeout = 3000
-        val txTimeout = 1000
         Thread ({
             try {
+                val rxTimeout = 3000
+                val txTimeout = 1000
                 val inputStream = BufferedInputStream(socket.getInputStream())
                 while (!socket.isClosed && isRunning) {
                     // Updating the channel status
@@ -185,6 +185,7 @@ open class ALinkTCPServer(
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {
+                socket.close()
                 clientMap.remove(thisAddress)
                 callback.onDisconnect(thisAddress)
                 Log.d(TAG, "Disconnect: $thisAddress, ip: $ip")

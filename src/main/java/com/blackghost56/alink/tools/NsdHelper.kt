@@ -13,7 +13,7 @@ class NsdHelper(
     private val TAG = NsdHelper::class.java.simpleName
 
     private val nsdManager: NsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
-    private var discoveryListener: DiscoveryListener? = null
+    var discoveryListener: DiscoveryListener? = null
     private val serviceList: MutableList<NsdServiceInfo> = ArrayList()
     private val serviceResolveSemaphore = Semaphore(1)
     private var discoveryCallback: DiscoveryCallback? = null
@@ -27,6 +27,7 @@ class NsdHelper(
     interface DiscoveryCallback {
         fun onServiceResolved(serviceInfo: NsdServiceInfo)
         fun onServiceLost(serviceInfo: NsdServiceInfo)
+        fun onDiscoveryStopped()
     }
 
     fun registerDiscoveryCallback(discoveryCallback: DiscoveryCallback) {
@@ -73,9 +74,26 @@ class NsdHelper(
         }
     }
 
-    private inner class DiscoveryListener : NsdManager.DiscoveryListener {
+    inner class DiscoveryListener : NsdManager.DiscoveryListener {
         override fun onDiscoveryStarted(regType: String) {
             Log.d(TAG, "Service discovery started")
+        }
+
+        override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+            Log.e(TAG, "Discovery starting failed. Error code: $errorCode")
+            discoveryListener = null
+        }
+
+        override fun onDiscoveryStopped(serviceType: String) {
+            Log.v(TAG, "Discovery stopped: $serviceType")
+            discoveryListener = null
+            discoveryCallback?.onDiscoveryStopped()
+        }
+
+        override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
+            Log.e(TAG, "Discovery stopping failed. Error code: $errorCode")
+            discoveryListener = null
+            discoveryCallback?.onDiscoveryStopped()
         }
 
         override fun onServiceFound(serviceInfo: NsdServiceInfo) {
@@ -103,21 +121,6 @@ class NsdHelper(
                     }
                 }
             }, TAG).start()
-        }
-
-        override fun onDiscoveryStopped(serviceType: String) {
-            Log.v(TAG, "Discovery stopped: $serviceType")
-            discoveryListener = null
-        }
-
-        override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
-            Log.e(TAG, "Discovery starting failed. Error code: $errorCode")
-            discoveryListener = null
-        }
-
-        override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
-            Log.e(TAG, "Discovery stopping failed. Error code: $errorCode")
-            discoveryListener = null
         }
     }
 
