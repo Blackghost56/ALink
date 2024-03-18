@@ -30,8 +30,6 @@ open class ALinkTCPServer(
     private var serverSocket: ServerSocket? = null
     @Volatile private var isRunning = false
     private var internalIncrementAddress = 0
-//    private val socketMap = mutableMapOf<Int, Socket>()
-//    private val rxBufMap = mutableMapOf<Int, MutableList<Byte>>()
     private val clientMap = mutableMapOf<Int, Client>()
     private var txHandler: Handler? = null
     private var rxHandler: Handler? = null
@@ -40,14 +38,14 @@ open class ALinkTCPServer(
     private data class Client(
         val socket: Socket,
         var rxBuffer: MutableList<Byte> = mutableListOf(),
-        var lastTxTime: Long = 0,
+        var lastTxPingTime: Long = 0,
         var lastRxTime: Long = 0
     )
 
     interface Callback {
         fun onSuccessStart()
         fun onError(msg: String)
-//        fun onStop()
+        //        fun onStop()
         fun onNewConnection(address: Int)
         fun onDisconnect(address: Int)
         fun onDataRx(address: Int, data: ByteArray)
@@ -153,18 +151,22 @@ open class ALinkTCPServer(
         Log.d(TAG, "New connection: $thisAddress, ip: $ip")
         Thread ({
             try {
-                val rxTimeout = 3000
-                val txTimeout = 1000
+                val rxTimeout = 5000
+                val txPingTimeout = 1000
+                client.lastRxTime = System.currentTimeMillis()
                 val inputStream = BufferedInputStream(socket.getInputStream())
                 while (!socket.isClosed && isRunning) {
                     // Updating the channel status
                     val currentTime = System.currentTimeMillis()
-                    if (currentTime > client.lastTxTime + txTimeout) {
+                    if (currentTime - client.lastTxPingTime > txPingTimeout &&
+                        currentTime - client.lastRxTime > txPingTimeout
+                    ) {
                         sendLL(thisAddress, PING, byteArrayOf())
-                        Log.d(TAG, "Tx ping: $thisAddress, ip: $ip")
+                        client.lastTxPingTime = currentTime
+//                        Log.d(TAG, "Tx ping: $thisAddress, ip: $ip")
                     }
-                    if (currentTime > client.lastRxTime + rxTimeout) {
-                        Log.d(TAG, "Rx timeout: $thisAddress, ip: $ip")
+                    if (currentTime - client.lastRxTime > rxTimeout) {
+                        Log.d(TAG, "Rx timeout: $thisAddress, ip: $ip     ${currentTime - client.lastRxTime}")
                         break
                     }
 
@@ -216,8 +218,8 @@ open class ALinkTCPServer(
             when (msg.first){
                 USER_DATA -> callback.onDataRx(address, msg.second)
                 PING -> {
-                    clientMap[address]?.lastTxTime = System.currentTimeMillis()
-                    Log.d(TAG, "Rx Ping $address")
+                    clientMap[address]?.lastRxTime = System.currentTimeMillis()
+//                    Log.d(TAG, "Rx Ping $address")
                 }
             }
         } catch (e: Exception) {
@@ -229,8 +231,8 @@ open class ALinkTCPServer(
         sendLL(address, TCPHeader.toRaw(USER_DATA, data))
     }
 
-    private fun sendLL(address: Int, type: TCPHeader.TCPMessageType, data: ByteArray){
-        sendLL(address, TCPHeader.toRaw(type, data))
+    private fun sendLL(address: Int, msgType: TCPHeader.TCPMessageType, data: ByteArray){
+        sendLL(address, TCPHeader.toRaw(msgType, data))
     }
 
     private fun sendLL(address: Int, data: ByteArray) {
@@ -243,10 +245,10 @@ open class ALinkTCPServer(
                         } else {
                             client.socket.getOutputStream().write(data)
                         }
-                        client.lastTxTime = System.currentTimeMillis()
                     } catch (e: Exception) {
                         e.printStackTrace()
                         clientMap.remove(address)
+                        client.socket.close()
                     }
                 } else {
                     Log.d(TAG, "The socket is not connected")
