@@ -2,21 +2,18 @@ package com.blackghost56.alink.client
 
 import android.content.Context
 import android.net.nsd.NsdServiceInfo
-import android.os.Handler
-import android.os.HandlerThread
 import android.util.Log
 import com.blackghost56.alink.Consts
-import com.blackghost56.alink.tools.CobsFrameReader
-import com.blackghost56.alink.tools.COBS
 import com.blackghost56.alink.tools.NsdHelper
 import com.blackghost56.alink.tools.TCPHeader
 import com.blackghost56.alink.tools.TCPHeader.TCPMessageType.PING
 import com.blackghost56.alink.tools.TCPHeader.TCPMessageType.USER_DATA
-import java.io.BufferedInputStream
-import java.net.InetAddress
+import com.blackghost56.alink.tools.TcpFrames
+import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
-
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 class ALinkTCPClient(
     private val context: Context,
@@ -24,14 +21,8 @@ class ALinkTCPClient(
     private val callback: Callback,
     val cobsEnable: Boolean = true
 ) {
-    private val TAG = ALinkTCPClient::class.java.simpleName
-
-    private var nsdHelper = NsdHelper(context, Consts.SERVICE_TYPE_TCP)
-    private var socket: Socket? = null
-    @Volatile private var isRunning = false
-    private var txHandler: Handler? = null
-    private var rxHandler: Handler? = null
-    private var stopDiscoveryResult = false
+    private val tag = ALinkTCPClient::class.java.simpleName
+    private var current: Session? = null
 
     interface Callback {
         fun onSocketOpened()
@@ -39,160 +30,129 @@ class ALinkTCPClient(
         fun onDataRx(data: ByteArray)
     }
 
+    private inner class Session : NsdHelper.DiscoveryCallback {
+        val discovery = NsdHelper(context, Consts.SERVICE_TYPE_TCP)
+        var searching = true
+        var socket: Socket? = null
+        val sender: ExecutorService = Executors.newSingleThreadExecutor { Thread(it, "ALinkCTxThread") }
+
+        override fun onServiceResolved(serviceInfo: NsdServiceInfo) = synchronized(this@ALinkTCPClient) {
+            if (current !== this || !searching || serviceInfo.serviceName != serverName) return@synchronized
+            val endpoint = InetSocketAddress(serviceInfo.host, serviceInfo.port)
+            val connection = Socket()
+            socket = connection
+            stopSearch()
+            Thread({ receive(this, connection, endpoint) }, "ALinkCThread").start()
+        }
+
+        override fun onServiceLost(serviceInfo: NsdServiceInfo) {}
+
+        override fun onDiscoveryStopped() = synchronized(this@ALinkTCPClient) {
+            if (current === this && searching) {
+                searching = false
+                finish(this)
+            }
+        }
+
+        fun stopSearch() {
+            if (!searching) return
+            searching = false
+            try {
+                discovery.stopServiceDiscovery()
+            } catch (e: RuntimeException) {
+                Log.w(tag, "Could not stop service discovery", e)
+            }
+        }
+    }
+
+    @Synchronized
     fun startDiscovery() {
-        if (!isRunning) {
-            val txThread = HandlerThread("ALinkCTxHandler")
-            txThread.start()
-            txHandler = Handler(txThread.looper)
-
-            val rxThread = HandlerThread("ALinkCRxHandler")
-            rxThread.start()
-            rxHandler = Handler(rxThread.looper)
-
-            nsdHelper.registerDiscoveryCallback(object : NsdHelper.DiscoveryCallback {
-                override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-                    Log.d(TAG, "onServiceResolved: $serviceInfo")
-                    if (serviceInfo.serviceName == serverName && !isRunning) {
-                        openSocket(serviceInfo.host, serviceInfo.port)
-                        nsdHelper.stopServiceDiscovery()
-                    }
-                }
-
-                override fun onServiceLost(serviceInfo: NsdServiceInfo) {
-                    Log.e(TAG, "onServiceLost: $serviceInfo")
-                }
-
-                override fun onDiscoveryStopped() {
-                    stopDiscoveryResult = true
-                }
-
-            })
-            nsdHelper.discoverServices()
-        } else {
-            Log.w(TAG, "Discovery has already been started")
+        if (current != null) return
+        val session = Session()
+        current = session
+        session.discovery.registerDiscoveryCallback(session)
+        try {
+            session.discovery.discoverServices()
+        } catch (e: RuntimeException) {
+            Log.w(tag, "Could not start service discovery", e)
+            finish(session)
         }
     }
 
-     fun stop(){
-        isRunning = false
-
-        txHandler?.let {
-            it.removeCallbacksAndMessages(null)
-            it.looper.quit()
-        }
-
-        rxHandler?.let {
-            it.removeCallbacksAndMessages(null)
-            it.looper.quit()
-        }
-
-        stopDiscoveryResult = false
-        nsdHelper.stopServiceDiscovery()
-        while (nsdHelper.discoveryListener != null && !stopDiscoveryResult) {
-            Thread.sleep(1)
-        }
+    @Synchronized
+    fun stop() {
+        current?.let { finish(it) }
     }
 
-    fun restart(){
+    @Synchronized
+    fun restart() {
         stop()
         startDiscovery()
     }
 
-    private fun openSocket(address: InetAddress, port: Int) {
-        if (!isRunning){
-            Thread({
-                try {
-                    val socket = Socket()
-                    Log.d(TAG, "New socket")
-                    this.socket = socket
-                    socket.connect(InetSocketAddress(address, port), 1000)
-                    val inputStream = BufferedInputStream(socket.getInputStream())
-                    isRunning = true
-                    callback.onSocketOpened()
-                    val frames = CobsFrameReader()
-                    val rxTimeout = 3000
-                    var lastRxTime: Long = System.currentTimeMillis()
-                    while (isRunning && !socket.isClosed){
-                        if (System.currentTimeMillis() - lastRxTime > rxTimeout) {
-                            Log.e(TAG, "The connection has timed out")
-                            break
-                        }
-
-                        val inSize = inputStream.available()
-                        if (inSize <= 0) {
-                            Thread.sleep(1)
-                            continue
-                        }
-
-                        lastRxTime = System.currentTimeMillis()
-                        val rxData = ByteArray(inSize)
-                        if (inputStream.read(rxData, 0, inSize) == inSize) {
-                            rxHandler?.post { processRxData(rxData, frames) }
-                        } else {
-                            Log.d(TAG, "The size of the file being read is not equal to the available size")
-                        }
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                } finally {
-                    socket?.close()
-                    callback.onSocketClosed()
-                    Log.d(TAG, "Socket closed")
-                }
-            }, "ALinkCThread").start()
+    @Synchronized
+    private fun finish(session: Session) {
+        if (current !== session) return
+        current = null
+        session.stopSearch()
+        session.sender.shutdownNow()
+        session.socket?.let {
+            it.close()
+            callback.onSocketClosed()
         }
     }
 
-    private fun processRxData(data: ByteArray, frames: CobsFrameReader) {
-        if (cobsEnable) {
-            frames.accept(data, ::onDataRx)
-        } else {
-            onDataRx(data)
-        }
-    }
-
-    private fun onDataRx(data: ByteArray) {
+    private fun receive(session: Session, socket: Socket, endpoint: InetSocketAddress) {
         try {
-            val msg = TCPHeader.fromRaw(data)
-            when (msg.first){
-                USER_DATA -> callback.onDataRx(msg.second)
-                PING -> {
-                    sendLL(TCPHeader.toRaw(PING, ByteArray(0)))
-//                    Log.d(TAG, "Rx Ping")
-                }
+            socket.connect(endpoint, 1000)
+            socket.soTimeout = 3000
+            synchronized(this) {
+                if (current !== session) return
+                callback.onSocketOpened()
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    fun send(data: ByteArray) {
-        sendLL(TCPHeader.toRaw(USER_DATA, data))
-    }
-
-    private fun sendLL(type: TCPHeader.TCPMessageType, data: ByteArray){
-        sendLL(TCPHeader.toRaw(type, data))
-        Log.d(TAG, "Tx: $type")
-    }
-
-    private fun sendLL(data: ByteArray) {
-        socket?.let {
-            txHandler?.post {
-                if (isRunning && !it.isClosed) {
-                    try {
-                        if (cobsEnable){
-                            it.getOutputStream().write(COBS.encode(data.toList()).toByteArray())
-                        } else {
-                            it.getOutputStream().write(data)
+            val frames = TcpFrames(cobsEnable)
+            val input = socket.getInputStream()
+            val buffer = ByteArray(8192)
+            while (!socket.isClosed) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                frames.accept(buffer, count) { raw ->
+                    synchronized(this) {
+                        if (current === session) {
+                            try {
+                                val (type, payload) = TCPHeader.fromRaw(raw)
+                                when (type) {
+                                    USER_DATA -> callback.onDataRx(payload)
+                                    PING -> enqueue(session, TCPHeader.toRaw(PING, byteArrayOf()))
+                                }
+                            } catch (e: Exception) {
+                                Log.w(tag, "Invalid ALink message", e)
+                            }
                         }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
                     }
-                } else {
-                    Log.d(TAG, "The socket is not connected")
                 }
             }
+        } catch (e: IOException) {
+            if (!socket.isClosed) Log.w(tag, "TCP connection ended", e)
+        } finally {
+            finish(session)
         }
     }
 
+    @Synchronized
+    fun send(data: ByteArray) {
+        current?.let { enqueue(it, TCPHeader.toRaw(USER_DATA, data)) }
+    }
+
+    private fun enqueue(session: Session, raw: ByteArray) {
+        val socket = session.socket ?: return
+        if (!socket.isConnected || socket.isClosed) return
+        session.sender.execute {
+            try {
+                socket.getOutputStream().write(TcpFrames.encode(cobsEnable, raw))
+            } catch (e: IOException) {
+                socket.close()
+            }
+        }
+    }
 }

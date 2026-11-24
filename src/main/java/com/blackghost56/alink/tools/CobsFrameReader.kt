@@ -6,8 +6,9 @@ internal class CobsFrameReader(private val maxEncodedSize: Int = 1024 * 1024) {
     private val partial = ByteArrayOutputStream()
     private var discarding = false
 
-    fun accept(data: ByteArray, onFrame: (ByteArray) -> Unit) {
-        for (value in data) {
+    fun accept(data: ByteArray, count: Int = data.size, onFrame: (ByteArray) -> Unit) {
+        for (index in 0 until count) {
+            val value = data[index]
             if (value == COBS.EOP) {
                 discarding = false
                 if (partial.size() == 0) continue

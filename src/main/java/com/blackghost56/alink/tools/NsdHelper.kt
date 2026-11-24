@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.util.Log
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Semaphore
 
 class NsdHelper(
@@ -13,15 +14,15 @@ class NsdHelper(
     private val TAG = NsdHelper::class.java.simpleName
 
     private val nsdManager: NsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
-    var discoveryListener: DiscoveryListener? = null
-    private val serviceList: MutableList<NsdServiceInfo> = ArrayList()
+    @Volatile var discoveryListener: DiscoveryListener? = null
+    private val serviceList = CopyOnWriteArrayList<NsdServiceInfo>()
     private val serviceResolveSemaphore = Semaphore(1)
     private var discoveryCallback: DiscoveryCallback? = null
     var registrationListener: NsdManager.RegistrationListener? = null
     private var serviceInfo: NsdServiceInfo? = null
 
     fun getServiceList(): List<NsdServiceInfo> {
-        return serviceList
+        return ArrayList(serviceList)
     }
 
     interface DiscoveryCallback {
@@ -82,6 +83,7 @@ class NsdHelper(
         override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
             Log.e(TAG, "Discovery starting failed. Error code: $errorCode")
             discoveryListener = null
+            discoveryCallback?.onDiscoveryStopped()
         }
 
         override fun onDiscoveryStopped(serviceType: String) {
@@ -111,15 +113,8 @@ class NsdHelper(
         override fun onServiceLost(service: NsdServiceInfo) {
             Thread({
                 Log.e(TAG, "Service lost: " + service.serviceName)
-                val it = serviceList.iterator()
-                while (it.hasNext()) {
-                    val serviceInfo = it.next()
-                    if (serviceInfo.serviceName == service.serviceName) {
-                        it.remove()
-                        discoveryCallback!!.onServiceLost(serviceInfo)
-                        break
-                    }
-                }
+                val found = serviceList.firstOrNull { it.serviceName == service.serviceName }
+                if (found != null && serviceList.remove(found)) discoveryCallback?.onServiceLost(found)
             }, TAG).start()
         }
     }
@@ -144,7 +139,10 @@ class NsdHelper(
                 }
             })
         } catch (e: InterruptedException) {
-            e.printStackTrace()
+            Thread.currentThread().interrupt()
+        } catch (e: RuntimeException) {
+            serviceResolveSemaphore.release()
+            Log.w(TAG, "Unable to start service resolution", e)
         }
     }
 }

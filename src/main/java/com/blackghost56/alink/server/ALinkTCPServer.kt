@@ -7,16 +7,17 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import com.blackghost56.alink.Consts
-import com.blackghost56.alink.tools.CobsFrameReader
-import com.blackghost56.alink.tools.COBS
+import com.blackghost56.alink.tools.TcpFrames
+import android.os.SystemClock
 import com.blackghost56.alink.tools.NsdHelper
 import com.blackghost56.alink.tools.TCPHeader
 import com.blackghost56.alink.tools.TCPHeader.TCPMessageType.PING
 import com.blackghost56.alink.tools.TCPHeader.TCPMessageType.USER_DATA
-import java.io.BufferedInputStream
+import java.io.IOException
+import java.net.SocketTimeoutException
 import java.net.ServerSocket
 import java.net.Socket
-import java.util.concurrent.ConcurrentHashMap
+
 
 open class ALinkTCPServer(
     context: Context,
@@ -32,17 +33,12 @@ open class ALinkTCPServer(
     private var startRequested = false
     @Volatile private var isRunning = false
     private var internalIncrementAddress = 0
-    private val clientMap = ConcurrentHashMap<Int, Client>()
+    private val clientMap = mutableMapOf<Int, Client>()
     private var txHandler: Handler? = null
     private var rxHandler: Handler? = null
 
 
-    private data class Client(
-        val socket: Socket,
-        val frames: CobsFrameReader = CobsFrameReader(),
-        var lastTxPingTime: Long = 0,
-        var lastRxTime: Long = 0
-    )
+    private class Client(val socket: Socket)
 
     interface Callback {
         fun onSuccessStart()
@@ -76,7 +72,7 @@ open class ALinkTCPServer(
         active.socket?.close()
         txHandler?.looper?.quit()
         rxHandler?.looper?.quit()
-        for (client in clientMap.values) client.socket.close()
+        for ((address, client) in clientMap.toMap()) disconnect(address, client)
         if (active.socket == null) {
             // The bind worker has not started yet.
             registration = null
@@ -198,69 +194,57 @@ open class ALinkTCPServer(
         callback.onNewConnection(thisAddress)
         val ip = socket.inetAddress.hostAddress ?: "Unknown"
         Log.d(TAG, "New connection: $thisAddress, ip: $ip")
-        Thread ({
+        val handler = requireNotNull(rxHandler)
+        Thread({
+            val frames = TcpFrames(cobsEnable)
             try {
-                val rxTimeout = 5000
-                val txPingTimeout = 1000
-                client.lastRxTime = System.currentTimeMillis()
-                val inputStream = BufferedInputStream(socket.getInputStream())
-                while (!socket.isClosed && isRunning) {
-                    // Updating the channel status
-                    val currentTime = System.currentTimeMillis()
-                    if (currentTime - client.lastTxPingTime > txPingTimeout &&
-                        currentTime - client.lastRxTime > txPingTimeout
-                    ) {
+                socket.soTimeout = 1000
+                val input = socket.getInputStream()
+                val buffer = ByteArray(8192)
+                var lastReceived = SystemClock.elapsedRealtime()
+                while (!socket.isClosed) {
+                    val count = try {
+                        input.read(buffer)
+                    } catch (_: SocketTimeoutException) {
+                        if (SystemClock.elapsedRealtime() - lastReceived >= 5000) break
                         sendLL(thisAddress, PING, byteArrayOf())
-                        client.lastTxPingTime = currentTime
-//                        Log.d(TAG, "Tx ping: $thisAddress, ip: $ip")
-                    }
-                    if (currentTime - client.lastRxTime > rxTimeout) {
-                        Log.d(TAG, "Rx timeout: $thisAddress, ip: $ip     ${currentTime - client.lastRxTime}")
-                        break
-                    }
-
-                    val inSize = inputStream.available()
-                    if (inSize <= 0) {
-                        Thread.sleep(1)
                         continue
                     }
-
-                    client.lastRxTime = System.currentTimeMillis()
-                    val rxData = ByteArray(inSize)
-                    if (inputStream.read(rxData, 0, inSize) == inSize) {
-                        rxHandler?.post { processRxData(thisAddress, rxData) }
-                    } else {
-                        Log.d(TAG, "The size of the file being read is not equal to the available size")
+                    if (count < 0) break
+                    lastReceived = SystemClock.elapsedRealtime()
+                    val bytes = buffer.copyOf(count)
+                    handler.post {
+                        if (!socket.isClosed) {
+                            try {
+                                frames.accept(bytes, bytes.size) { onDataRx(thisAddress, it) }
+                            } catch (e: IOException) {
+                                disconnect(thisAddress, client)
+                            }
+                        }
                     }
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
+            } catch (e: IOException) {
+                if (!socket.isClosed) Log.w(TAG, "Client read failed", e)
             } finally {
-                socket.close()
-                clientMap.remove(thisAddress)
-                callback.onDisconnect(thisAddress)
-                Log.d(TAG, "Disconnect: $thisAddress, ip: $ip")
+                // Deliver queued data before reporting EOF. stop() handles a terminated looper.
+                if (!handler.post { disconnect(thisAddress, client) }) disconnect(thisAddress, client)
             }
         }, "ALinkSThread_$thisAddress").start()
     }
 
-    private fun processRxData(address: Int, data: ByteArray) {
-        if (cobsEnable) {
-            clientMap[address]?.frames?.accept(data) { onDataRx(address, it) }
-        } else {
-            onDataRx(address, data)
-        }
+    @Synchronized
+    private fun disconnect(address: Int, client: Client) {
+        if (clientMap[address] !== client) return
+        clientMap.remove(address)
+        client.socket.close()
+        callback.onDisconnect(address)
     }
-
     private fun onDataRx(address: Int, data: ByteArray) {
         try {
             val msg = TCPHeader.fromRaw(data)
             when (msg.first){
                 USER_DATA -> callback.onDataRx(address, msg.second)
-                PING -> {
-                    clientMap[address]?.lastRxTime = System.currentTimeMillis()
-//                    Log.d(TAG, "Rx Ping $address")
-                }
+                PING -> Unit
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -275,20 +259,16 @@ open class ALinkTCPServer(
         sendLL(address, TCPHeader.toRaw(msgType, data))
     }
 
+    @Synchronized
     private fun sendLL(address: Int, data: ByteArray) {
         clientMap[address]?.let { client ->
             txHandler?.post {
                 if (isRunning && !client.socket.isClosed) {
                     try {
-                        if (cobsEnable){
-                            client.socket.getOutputStream().write(COBS.encode(data.toList()).toByteArray())
-                        } else {
-                            client.socket.getOutputStream().write(data)
-                        }
+                        client.socket.getOutputStream().write(TcpFrames.encode(cobsEnable, data))
                     } catch (e: Exception) {
                         e.printStackTrace()
-                        clientMap.remove(address)
-                        client.socket.close()
+                        disconnect(address, client)
                     }
                 } else {
                     Log.d(TAG, "The socket is not connected")
@@ -297,14 +277,13 @@ open class ALinkTCPServer(
         }
     }
 
+    @Synchronized
     fun getClientList(): List<Int> {
         return clientMap.keys.toList()
     }
 
+    @Synchronized
     fun getClientAddressList(): List<String> {
-        return mutableListOf<Client>().apply {
-            addAll(clientMap.values)
-        }.map { it.socket.inetAddress.hostAddress ?: "Unknown" }.toList()
+        return clientMap.values.map { it.socket.inetAddress.hostAddress ?: "Unknown" }
     }
-
 }
