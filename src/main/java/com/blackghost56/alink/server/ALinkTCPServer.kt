@@ -16,7 +16,7 @@ import com.blackghost56.alink.tools.TCPHeader.TCPMessageType.USER_DATA
 import java.io.BufferedInputStream
 import java.net.ServerSocket
 import java.net.Socket
-import java.net.SocketException
+import java.util.concurrent.ConcurrentHashMap
 
 open class ALinkTCPServer(
     context: Context,
@@ -28,10 +28,11 @@ open class ALinkTCPServer(
     private val TAG = ALinkTCPServer::class.java.simpleName
 
     private var nsdHelper = NsdHelper(context, Consts.SERVICE_TYPE_TCP)
-    private var serverSocket: ServerSocket? = null
+    private var registration: Registration? = null
+    private var startRequested = false
     @Volatile private var isRunning = false
     private var internalIncrementAddress = 0
-    private val clientMap = mutableMapOf<Int, Client>()
+    private val clientMap = ConcurrentHashMap<Int, Client>()
     private var txHandler: Handler? = null
     private var rxHandler: Handler? = null
 
@@ -53,96 +54,143 @@ open class ALinkTCPServer(
     }
 
 
-    fun start(){
-        if (isRunning || nsdHelper.registrationListener != null)
-            return
-
-        // Try to register NSD service
-        nsdHelper.registrationListener = object : NsdManager.RegistrationListener {
-            override fun onServiceRegistered(p0: NsdServiceInfo?) {
-                Log.i(TAG, "onServiceRegistered: $p0")
-                openServerSocket()
-            }
-
-            override fun onRegistrationFailed(p0: NsdServiceInfo?, p1: Int) {
-                Log.e(TAG, "onRegistrationFailed: $p0")
-                callback.onError("Filed registration NSD service")
-                isRunning = false
-                nsdHelper.registrationListener = null
-            }
-
-            override fun onServiceUnregistered(p0: NsdServiceInfo?) {
-                Log.i(TAG, "onServiceUnregistered: $p0")
-                isRunning = false
-                nsdHelper.registrationListener = null
-            }
-
-            override fun onUnregistrationFailed(p0: NsdServiceInfo?, p1: Int) {
-                Log.e(TAG, "onUnregistrationFailed: $p0")
-            }
-        }
-        nsdHelper.registrationListener?.let {
-            nsdHelper.registerService(name = name, port = port, callback = it)
+    @Synchronized
+    fun start() {
+        startRequested = true
+        val active = registration
+        if (active == null) {
+            val next = Registration(name)
+            registration = next
+            Thread({ bindAndRegister(next) }, "ALinkSBind").start()
+        } else if (active.closing) {
+            unregisterIfReady(active)
         }
     }
 
-    fun stop(){
+    @Synchronized
+    fun stop() {
+        startRequested = false
+        val active = registration ?: return
+        active.closing = true
         isRunning = false
-        serverSocket?.close()
-        nsdHelper.unregisterService()
-
-        txHandler?.let {
-            it.removeCallbacksAndMessages(null)
-            it.looper.quit()
+        active.socket?.close()
+        txHandler?.looper?.quit()
+        rxHandler?.looper?.quit()
+        for (client in clientMap.values) client.socket.close()
+        if (active.socket == null) {
+            // The bind worker has not started yet.
+            registration = null
+        } else {
+            unregisterIfReady(active)
         }
-
-        rxHandler?.let {
-            it.removeCallbacksAndMessages(null)
-            it.looper.quit()
-        }
-
-        clientMap.clear()
-        internalIncrementAddress = 0
-
-//        callback.onStop()
     }
 
-    fun restart(){
+    @Synchronized
+    fun restart() {
         stop()
         start()
     }
 
-    private fun openServerSocket(){
-        val txThread = HandlerThread("ALinkSTxHandler")
-        txThread.start()
-        txHandler = Handler(txThread.looper)
-
-        val rxThread = HandlerThread("ALinkSRxHandler")
-        rxThread.start()
-        rxHandler = Handler(rxThread.looper)
-
-        Thread ({
-            try {
-                serverSocket = ServerSocket(port)
-                callback.onSuccessStart()
-                isRunning = true
-                while (isRunning) {
-                    serverSocket?.accept()?.let { socket ->
-                        clientHandler(socket)
-                    }
-                }
-            } catch (_: SocketException){
-
-            } catch (e: Exception) {
-                e.printStackTrace()
-                callback.onError(e.message.toString())
-            } finally {
-                //serverSocket?.close()
-                isRunning = false
-            }
-        }, "ALinkSThread").start()
+    @Synchronized
+    private fun bindAndRegister(active: Registration) {
+        if (registration !== active) return
+        try {
+            val socket = ServerSocket(port)
+            active.socket = socket
+            nsdHelper.registerService(active.serviceName, socket.localPort, active)
+        } catch (e: Exception) {
+            registrationFailed(active, e.toString())
+        }
     }
 
+    private inner class Registration(val serviceName: String) : NsdManager.RegistrationListener {
+        var socket: ServerSocket? = null
+        var registered = false
+        var closing = false
+        var unregistering = false
+
+        override fun onServiceRegistered(info: NsdServiceInfo?) = synchronized(this@ALinkTCPServer) {
+            if (registration !== this) return@synchronized
+            registered = true
+            if (closing) {
+                unregisterIfReady(this)
+            } else {
+                val listener = requireNotNull(socket)
+                txHandler = newHandler("ALinkSTxHandler")
+                rxHandler = newHandler("ALinkSRxHandler")
+                isRunning = true
+                Thread({ acceptClients(this, listener) }, "ALinkSThread").start()
+                callback.onSuccessStart()
+            }
+        }
+
+        override fun onRegistrationFailed(info: NsdServiceInfo?, error: Int) =
+            registrationFailed(this, "NSD registration failed ($error)")
+
+        override fun onServiceUnregistered(info: NsdServiceInfo?) = synchronized(this@ALinkTCPServer) {
+            if (registration === this) finishRegistration()
+        }
+
+        override fun onUnregistrationFailed(info: NsdServiceInfo?, error: Int) = synchronized(this@ALinkTCPServer) {
+            if (registration !== this) return@synchronized
+            unregistering = false
+            callback.onError("NSD unregistration failed ($error)")
+        }
+    }
+
+    private fun newHandler(name: String): Handler {
+        val thread = HandlerThread(name)
+        thread.start()
+        return Handler(thread.looper)
+    }
+
+    // Called under the server lock. A stop during registration waits for its callback.
+    private fun unregisterIfReady(active: Registration) {
+        if (!active.registered || active.unregistering) return
+        active.unregistering = true
+        try {
+            nsdHelper.unregisterService()
+        } catch (e: RuntimeException) {
+            active.unregistering = false
+            callback.onError(e.toString())
+        }
+    }
+
+    @Synchronized
+    private fun registrationFailed(active: Registration, error: String) {
+        if (registration !== active) return
+        active.socket?.close()
+        if (!active.closing) {
+            startRequested = false
+            callback.onError(error)
+        }
+        finishRegistration()
+    }
+
+    private fun finishRegistration() {
+        nsdHelper.registrationListener = null
+        registration = null
+        if (startRequested) start()
+    }
+
+    private fun acceptClients(active: Registration, listener: ServerSocket) {
+        try {
+            while (!listener.isClosed) {
+                val socket = listener.accept()
+                synchronized(this) {
+                    if (registration === active && !active.closing) clientHandler(socket)
+                    else socket.close()
+                }
+            }
+        } catch (e: Exception) {
+            synchronized(this) {
+                if (registration === active && !active.closing) {
+                    stop()
+                    callback.onError(e.toString())
+                }
+            }
+        }
+    }
     private fun clientHandler(socket: Socket) {
         val thisAddress = internalIncrementAddress++
         val client = Client(socket)
