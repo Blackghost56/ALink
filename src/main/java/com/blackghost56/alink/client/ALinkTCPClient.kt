@@ -39,9 +39,13 @@ class ALinkTCPClient(
         override fun onServiceResolved(serviceInfo: NsdServiceInfo) = synchronized(this@ALinkTCPClient) {
             if (current !== this || !searching || serviceInfo.serviceName != serverName) return@synchronized
             val endpoint = InetSocketAddress(serviceInfo.host, serviceInfo.port)
+            stopSearch()
+            connect(endpoint)
+        }
+
+        fun connect(endpoint: InetSocketAddress) {
             val connection = Socket()
             socket = connection
-            stopSearch()
             Thread({ receive(this, connection, endpoint) }, "ALinkCThread").start()
         }
 
@@ -77,6 +81,15 @@ class ALinkTCPClient(
             Log.w(tag, "Could not start service discovery", e)
             finish(session)
         }
+    }
+
+    @Synchronized
+    fun connectLocal(port: Int) {
+        if (current != null) return
+        val session = Session()
+        current = session
+        session.searching = false
+        session.connect(InetSocketAddress("127.0.0.1", port))
     }
 
     @Synchronized

@@ -19,17 +19,20 @@ import java.net.ServerSocket
 import java.net.Socket
 
 
-open class ALinkTCPServer(
+open class ALinkTCPServer @JvmOverloads constructor(
     context: Context,
     var name: String,
     private val port: Int,
     private val callback: Callback,
-    private val cobsEnable: Boolean = true
+    private val cobsEnable: Boolean = true,
+    private val localOnly: Boolean = false
 ) {
     private val TAG = ALinkTCPServer::class.java.simpleName
 
     private var nsdHelper = NsdHelper(context, Consts.SERVICE_TYPE_TCP)
     private var registration: Registration? = null
+    val listeningPort: Int?
+        @Synchronized get() = registration?.takeIf { isRunning }?.socket?.localPort
     private var startRequested = false
     @Volatile private var isRunning = false
     private var internalIncrementAddress = 0
@@ -73,7 +76,9 @@ open class ALinkTCPServer(
         txHandler?.looper?.quit()
         rxHandler?.looper?.quit()
         for ((address, client) in clientMap.toMap()) disconnect(address, client)
-        if (active.socket == null) {
+        if (localOnly) {
+            finishRegistration()
+        } else if (active.socket == null) {
             // The bind worker has not started yet.
             registration = null
         } else {
@@ -91,9 +96,11 @@ open class ALinkTCPServer(
     private fun bindAndRegister(active: Registration) {
         if (registration !== active) return
         try {
-            val socket = ServerSocket(port)
+            val socket = if (localOnly) ServerSocket(port, 1, java.net.InetAddress.getByName("127.0.0.1"))
+                         else ServerSocket(port)
             active.socket = socket
-            nsdHelper.registerService(active.serviceName, socket.localPort, active)
+            if (localOnly) startListening(active, socket)
+            else nsdHelper.registerService(active.serviceName, socket.localPort, active)
         } catch (e: Exception) {
             registrationFailed(active, e.toString())
         }
@@ -111,12 +118,7 @@ open class ALinkTCPServer(
             if (closing) {
                 unregisterIfReady(this)
             } else {
-                val listener = requireNotNull(socket)
-                txHandler = newHandler("ALinkSTxHandler")
-                rxHandler = newHandler("ALinkSRxHandler")
-                isRunning = true
-                Thread({ acceptClients(this, listener) }, "ALinkSThread").start()
-                callback.onSuccessStart()
+                startListening(this, requireNotNull(socket))
             }
         }
 
@@ -132,6 +134,14 @@ open class ALinkTCPServer(
             unregistering = false
             callback.onError("NSD unregistration failed ($error)")
         }
+    }
+
+    private fun startListening(active: Registration, listener: ServerSocket) {
+        txHandler = newHandler("ALinkSTxHandler")
+        rxHandler = newHandler("ALinkSRxHandler")
+        isRunning = true
+        Thread({ acceptClients(active, listener) }, "ALinkSThread").start()
+        callback.onSuccessStart()
     }
 
     private fun newHandler(name: String): Handler {

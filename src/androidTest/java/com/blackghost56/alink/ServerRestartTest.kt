@@ -2,6 +2,7 @@ package com.blackghost56.alink
 
 import androidx.test.platform.app.InstrumentationRegistry
 import com.blackghost56.alink.server.ALinkTCPServer
+import com.blackghost56.alink.client.ALinkTCPClient
 import com.blackghost56.alink.tools.COBS
 import com.blackghost56.alink.tools.TCPHeader
 import org.junit.Assert.assertEquals
@@ -13,6 +14,40 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
 class ServerRestartTest {
+    @Test
+    fun reconnectsToLoopbackListenerOnItsAssignedPort() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val events = LinkedBlockingQueue<String>()
+        val server = ALinkTCPServer(context, "unused", 0, object : ALinkTCPServer.Callback {
+            override fun onSuccessStart() { events.add("ready") }
+            override fun onError(msg: String) { events.add(msg) }
+            override fun onNewConnection(address: Int) {}
+            override fun onDisconnect(address: Int) {}
+            override fun onDataRx(address: Int, data: ByteArray) { events.add(data.decodeToString()) }
+        }, localOnly = true)
+        val client = ALinkTCPClient(context, "unused", object : ALinkTCPClient.Callback {
+            override fun onSocketOpened() { events.add("connected") }
+            override fun onSocketClosed() { events.add("closed") }
+            override fun onDataRx(data: ByteArray) {}
+        })
+        try {
+            repeat(2) {
+                server.start()
+                assertEquals("ready", events.poll(5, TimeUnit.SECONDS))
+                client.connectLocal(requireNotNull(server.listeningPort))
+                assertEquals("connected", events.poll(5, TimeUnit.SECONDS))
+                client.send("sample".encodeToByteArray())
+                assertEquals("sample", events.poll(5, TimeUnit.SECONDS))
+                server.stop()
+                assertEquals("closed", events.poll(5, TimeUnit.SECONDS))
+                assertEquals(null, server.listeningPort)
+            }
+        } finally {
+            client.stop()
+            server.stop()
+        }
+    }
+
     @Test
     fun retriesOccupiedPortAndAcceptsOrderedMessagesAfterRename() {
         val events = LinkedBlockingQueue<String>()
