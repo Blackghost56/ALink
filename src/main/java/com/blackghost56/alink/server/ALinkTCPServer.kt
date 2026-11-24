@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import com.blackghost56.alink.Consts
+import com.blackghost56.alink.tools.CobsFrameReader
 import com.blackghost56.alink.tools.COBS
 import com.blackghost56.alink.tools.NsdHelper
 import com.blackghost56.alink.tools.TCPHeader
@@ -37,7 +38,7 @@ open class ALinkTCPServer(
 
     private data class Client(
         val socket: Socket,
-        var rxBuffer: MutableList<Byte> = mutableListOf(),
+        val frames: CobsFrameReader = CobsFrameReader(),
         var lastTxPingTime: Long = 0,
         var lastRxTime: Long = 0
     )
@@ -196,17 +197,8 @@ open class ALinkTCPServer(
     }
 
     private fun processRxData(address: Int, data: ByteArray) {
-        if (cobsEnable){
-            clientMap[address]?.let { client ->
-                for (value in data) {
-                    if (value == COBS.EOP) {
-                        onDataRx(address, COBS.decode(client.rxBuffer).toByteArray())
-                        client.rxBuffer.clear()
-                    } else {
-                        client.rxBuffer.add(value)
-                    }
-                }
-            }
+        if (cobsEnable) {
+            clientMap[address]?.frames?.accept(data) { onDataRx(address, it) }
         } else {
             onDataRx(address, data)
         }

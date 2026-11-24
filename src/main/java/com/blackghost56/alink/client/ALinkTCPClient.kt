@@ -6,6 +6,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import com.blackghost56.alink.Consts
+import com.blackghost56.alink.tools.CobsFrameReader
 import com.blackghost56.alink.tools.COBS
 import com.blackghost56.alink.tools.NsdHelper
 import com.blackghost56.alink.tools.TCPHeader
@@ -30,7 +31,6 @@ class ALinkTCPClient(
     @Volatile private var isRunning = false
     private var txHandler: Handler? = null
     private var rxHandler: Handler? = null
-    private var rxBuf = mutableListOf<Byte>()
     private var stopDiscoveryResult = false
 
     interface Callback {
@@ -109,6 +109,7 @@ class ALinkTCPClient(
                     val inputStream = BufferedInputStream(socket.getInputStream())
                     isRunning = true
                     callback.onSocketOpened()
+                    val frames = CobsFrameReader()
                     val rxTimeout = 3000
                     var lastRxTime: Long = System.currentTimeMillis()
                     while (isRunning && !socket.isClosed){
@@ -126,7 +127,7 @@ class ALinkTCPClient(
                         lastRxTime = System.currentTimeMillis()
                         val rxData = ByteArray(inSize)
                         if (inputStream.read(rxData, 0, inSize) == inSize) {
-                            rxHandler?.post { processRxData(rxData) }
+                            rxHandler?.post { processRxData(rxData, frames) }
                         } else {
                             Log.d(TAG, "The size of the file being read is not equal to the available size")
                         }
@@ -135,7 +136,6 @@ class ALinkTCPClient(
                     e.printStackTrace()
                 } finally {
                     socket?.close()
-                    rxBuf.clear()
                     callback.onSocketClosed()
                     Log.d(TAG, "Socket closed")
                 }
@@ -143,16 +143,9 @@ class ALinkTCPClient(
         }
     }
 
-    private fun processRxData(data: ByteArray) {
-        if (cobsEnable){
-            for (value in data) {
-                if (value == COBS.EOP) {
-                    onDataRx(COBS.decode(rxBuf).toByteArray())
-                    rxBuf.clear()
-                } else {
-                    rxBuf.add(value)
-                }
-            }
+    private fun processRxData(data: ByteArray, frames: CobsFrameReader) {
+        if (cobsEnable) {
+            frames.accept(data, ::onDataRx)
         } else {
             onDataRx(data)
         }

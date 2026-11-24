@@ -44,10 +44,11 @@ class COBS {
 
 
         fun decode(data: List<Byte>): List<Byte> {
-            val result: MutableList<Byte> = LinkedList()
+            val result = ArrayList<Byte>(data.size)
 
             var lastEOP = 0
             var nextEOP = 0xff and data[0].toInt()
+            require(nextEOP in 1..data.size) { "Invalid COBS block" }
             for (i in 1 until data.size) {
                 val value = data[i]
                 if (i == nextEOP) {
@@ -55,6 +56,7 @@ class COBS {
                         result.add(EOP)
                     lastEOP = nextEOP
                     nextEOP += 0xff and value.toInt()
+                    require(value != EOP && nextEOP <= data.size) { "Invalid COBS block" }
                 } else {
                     result.add(value)
                 }
